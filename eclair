@@ -1,0 +1,17 @@
+#!/bin/bash
+readonly PWD=$(pwd)
+
+function s3cfg {
+    local key="$1"
+    awk -F "=" '/'"$key"'/ {print $2}' ~/.s3cfg | tr -d ' '
+}
+
+function main() {
+    local access_key=$(s3cfg access_key)
+    local secret_key=$(s3cfg secret_key)
+    local env="dev/jstimpson"
+    local eclair_root="files.republicwireless.com/private/deploy/eclair/$env"
+    "$PWD"/eclair.erl "$access_key" "$secret_key" "$eclair_root"
+}
+
+main
