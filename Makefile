@@ -1,9 +1,9 @@
 PROJECT = eclair
 DEPS = mini_s3
-dep_mini_s3 = git git@github.com:chef/mini_s3.git master
+dep_mini_s3 = git git@github.com:Phonebooth/mini_s3.git master
 include erlang.mk
 
-build:
+build: all
 	mkdir -p .eclair/deps/mini_s3/ebin
 	mkdir -p .eclair/deps/ibrowse/ebin
 	cp deps/mini_s3/ebin/* .eclair/deps/mini_s3/ebin

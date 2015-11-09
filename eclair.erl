@@ -6,6 +6,7 @@
 -define(AccessKey, "{{ access_key }}").
 -define(SecretKey, "{{ secret_key }}").
 -define(Root, "{{ root }}").
+-define(Version, "{{ version }}").
 -define(Tags, "{{ tags }}").
 
 -record(host_data, {
@@ -23,17 +24,17 @@
 main(["bootstrap"|Args]) ->
     bootstrap(Args);
 main(Args) ->
-    %% TODO - app versioning
     {Props, _Data} = args_to_properties(Args),
     Props2 = ensure_with_doteclair_config(Props),
     Props3 = ensure_with_hardcoded_config(Props2),
     ok = application:start(ibrowse),
     HostData = gather_host_data(),
     Root = proplists:get_value(root, Props3),
+    Version = normalize_version_input(proplists:get_value(version, Props3)),
     Tags = proplists:get_value(tags, Props3),
-    Paths = build_paths(Root, Tags, HostData),
     Config = mini_s3:new(proplists:get_value(access_key, Props3),
             proplists:get_value(secret_key, Props3)),
+    Paths = build_paths(Root, Version, Tags, HostData, Config),
     lists:foreach(fun(X) ->
                 io:format("Searching path ~p~n", [X]),
                 get_path(X, Config)
@@ -44,9 +45,7 @@ get_path(Path, Config) ->
     get_files(Bucket, Prefix, Contents, Config).
 
 list_path(Path, Config) ->
-    Split = filename:split(Path),
-    Bucket = hd(Split),
-    Prefix = filename:join(tl(Split)),
+    {Bucket, Prefix} = s3split_path(Path),
     Response = mini_s3:list_objects(Bucket, [{prefix, Prefix}], Config),
     Contents = proplists:get_value(contents, Response),
     RealContents = lists:filter(fun(X) ->
@@ -56,6 +55,13 @@ list_path(Path, Config) ->
                 nomatch =:= re:run(Key, "\\$folder\\$", [{capture, none}])
         end, Contents),
     {Bucket, Prefix, RealContents}.
+
+
+s3split_path(Path) ->
+    Split = filename:split(Path),
+    Bucket = hd(Split),
+    Prefix = filename:join(tl(Split)),
+    {Bucket, Prefix}.
 
 get_files(_Bucket, _Prefix, [], _Config) ->
     ok;
@@ -138,21 +144,114 @@ gather_host_data() ->
         epmd_names=Names
     }.
 
-build_paths(Root, Tags, #host_data{hostname=Hostname, cwd_app=#app_details{app=App}}) ->
+build_paths(Root, Version, Tags, #host_data{hostname=Hostname,
+        cwd_app=#app_details{app=App},
+        epmd_names=EpmdNames}, Config) ->
     % Paths are searched in this order:
     %      1. root path
-    %  [2-n]. tags
-    %    n+1. hostname
-    SplitTags = ["root"] ++ split_tags(Tags) ++ ["host/"++Hostname],
+    %      2. tags
+    %      3. epmd nodes
+    %      4. hostname
     AppName = case lists:keyfind(application, 1, App) of
         false ->
             undefined;
         Tuple ->
             element(2, Tuple)
     end,
+    NewRoot = case find_closest_version(Version, Root, App, AppName, Config) of
+        {error, none} ->
+            filename:join([Root, AppName]);
+        {ok, Vsn} ->
+            filename:join([Root, AppName, "version", Vsn])
+    end,
+    SplitTags = ["root"] ++ 
+                split_tags(Tags) ++ 
+                [ "epmd/" ++ X || {X,_} <- EpmdNames ] ++
+                ["host/"++Hostname],
     lists:map(fun(X) ->
-                filename:join([Root, AppName, X])
+                filename:join([NewRoot, X])
         end, SplitTags).
+
+find_closest_version(none, _, _, _, _) ->
+    {error, none};
+find_closest_version(auto, Root, App, AppName, Config) ->
+    {_, _, Details} = lists:keyfind(application, 1, App),
+    AutoVsn = proplists:get_value(vsn, Details),
+    find_closest_version(AutoVsn, Root, App, AppName, Config);
+find_closest_version(Vsn, Root, _App, AppName, Config) ->
+    io:format("Looking for version root ~p~n", [Vsn]),
+    S3Versions = get_versions(Root, AppName, Config),
+    closest_version_match(Vsn, S3Versions).
+
+closest_version_match(Vsn, VsnList) ->
+    case lists:member(Vsn, VsnList) of
+        true ->
+            {ok, Vsn};
+        false ->
+            case extract_numbered_version(Vsn) of
+                {ok, InputVsn} ->
+                    LongVsns = lists:filtermap(fun(X) ->
+                                case extract_numbered_version(X) of
+                                    {ok, NV} ->
+                                        {true, {version_to_long(NV), X}};
+                                    {error, no_numbering} ->
+                                        false
+                                end
+                        end, VsnList),
+                    LongVsns2 = lists:sort(LongVsns),
+                    {ok, search_versions(version_to_long(InputVsn), LongVsns2, undefined)};
+                {error, no_numbering} ->
+                    {error, version_mismatch}
+            end
+    end.
+
+search_versions(_In, [], Previous) ->
+    Previous;
+search_versions(In, [{H, OrigVsn}|T], Previous) ->
+    if
+        In < H ->
+            Previous;
+        true ->
+            search_versions(In, T, OrigVsn)
+    end.
+
+extract_numbered_version(Vsn) ->
+    case re:run(Vsn, "(?<n>[0-9]+)(\\.|$)", [global, {capture, [n], list}]) of
+        {match, SplitNums} ->
+            {ok, [ list_to_integer(X) || [X] <- SplitNums ]};
+        nomatch ->
+            {error, no_numbering}
+    end.
+
+version_to_long([Major]) -> version_to_long([Major, 0]);
+version_to_long([Major, Minor]) -> version_to_long([Major, Minor, 0]);
+version_to_long([Major, Minor, Bugfix]) -> version_to_long([Major, Minor, Bugfix, 0]);
+version_to_long([Major, Minor, Bugfix, Build]) when is_integer(Major) andalso
+                                                    is_integer(Minor) andalso
+                                                    is_integer(Bugfix) andalso
+                                                    is_integer(Build) ->
+    Major bsl (3*16) +
+    Minor bsl (2*16) +
+    Bugfix bsl (1*16) +
+    Build.
+
+get_versions(Root, AppName, Config) ->
+    {Bucket, Prefix} = s3split_path(filename:join([Root, AppName, "version"])),
+    Response = mini_s3:list_objects(Bucket, [{prefix, Prefix++"/"},{delimiter, "/"}], Config),
+    S3Versions = lists:foldl(fun(X, A) ->
+                case proplists:get_value(prefix, X) of
+                    undefined ->
+                        A;
+                    VsnPrefix ->
+                        case re:run(VsnPrefix, "version/(?<vsn>[^/]*)", [{capture, ['vsn'], list}]) of
+                            {match, [V]} ->
+                                [V|A];
+                            nomatch ->
+                                A
+                        end
+                end
+        end, [], proplists:get_value(common_prefixes, Response)),
+    lists:reverse(S3Versions).
 
 split_tags(Tags) ->
     string:tokens(Tags, ",").
@@ -203,15 +302,25 @@ bootstrap(Args) ->
     AccessKey = getline_arg(access_key, Props2),
     SecretKey = getline_arg(secret_key, Props2),
     Root = getline_arg(root, Props2),
+    Version = normalize_version_input(getline_arg(version, Props2)),
     Tags = getline_arg(tags, Props2),
     write_doteclair([{access_key, AccessKey},
                     {secret_key, SecretKey},
                     {root, Root},
+                    {version, Version},
                     {tags, Tags}]).
+
+normalize_version_input("") -> none;
+normalize_version_input("none") -> none;
+normalize_version_input("auto") -> auto;
+normalize_version_input(V) -> V.
 
 s3cfg(Key) when Key =:= "access_key" orelse Key =:= "secret_key" ->
     os:cmd("awk -F= '/'"++Key++"'/ {print $2}' ~/.s3cfg | tr -d ' \\n'");
 s3cfg(_) -> [].
+
+prompt(version) -> "version (none|auto|x.y.z)> ";
+prompt(Key) -> atom_to_list(Key) ++ "> ".
 
 getline_arg(Key, Props) ->
     case proplists:get_value(Key, Props) of
@@ -223,7 +332,7 @@ getline_arg(Key, Props) ->
                             io:format("Missing data and quiet flag given. Exiting with failure~n", []),
                             halt(1);
                         _ ->
-                            string:strip(io:get_line(atom_to_list(Key)++"> "), right, $\n)
+                            string:strip(io:get_line(prompt(Key)), right, $\n)
                     end;
                 V0 ->
                     io:format("Found ~p in .s3cfg.~n", [Key]),
@@ -246,6 +355,7 @@ ensure_with_hardcoded_config(Props) ->
     ensure_proplist([{access_key, ?AccessKey},
                     {secret_key, ?SecretKey},
                     {root, ?Root},
+                    {version, ?Version},
                     {tags, ?Tags}], Props).
 
 ensure_proplist(From, To) ->
@@ -308,8 +418,27 @@ merge(Src, Dest, MismatchPolicy) ->
     AddsPaths = [ {X, proplists:get_value(X, SrcPaths)} || X <- AddsKeylist ],
     UpdatesPaths = [ {X, proplists:get_value(X, SrcPaths)} || X <- UpdatesKeylist ],
 
+    if
+        length(AddsPaths) > 0 ->
+            io:format("[adds]~n", []),
+            lists:foreach(fun(X) ->
+                        io:format("    n ~p~n", [X])
+                end, AddsPaths);
+        true ->
+            ok
+    end,
+
+    if
+        length(UpdatesPaths) > 0 ->
+            io:format("[updates]~n", []);
+        true ->
+            ok
+    end,
+
     Merged = lists:sort(
         lists:foldl(fun(U = {KU, _VU}, Acc) ->
+                    io:format("    - ~p~n", [proplists:lookup(KU, Acc)]),
+                    io:format("    + ~p~n~n", [U]),
                 proplists:delete(KU, Acc) ++ [U]
         end, DestPaths2, UpdatesPaths) ++ AddsPaths
     ),
