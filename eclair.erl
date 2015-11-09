@@ -336,7 +336,13 @@ normalize_version_input("auto") -> auto;
 normalize_version_input(V) -> V.
 
 s3cfg(Key) when Key =:= "access_key" orelse Key =:= "secret_key" ->
-    os:cmd("awk -F= '/'"++Key++"'/ {print $2}' ~/.s3cfg | tr -d ' \\n'");
+    S3Cfg = "~/.s3cfga",
+    case re:run(os:cmd(S3Cfg), "No such file", [{capture, none}]) of
+        match ->
+            [];
+        nomatch ->
+            os:cmd("awk -F= '/'"++Key++"'/ {print $2}' "++S3Cfg++" | tr -d ' \\n'")
+    end;
 s3cfg(_) -> [].
 
 prompt(version) -> "version (none|auto|x.y.z)> ";
