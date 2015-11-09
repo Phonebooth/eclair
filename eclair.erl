@@ -23,6 +23,7 @@
 main(["bootstrap"|Args]) ->
     bootstrap(Args);
 main(Args) ->
+    %% TODO - app versioning
     {Props, _Data} = args_to_properties(Args),
     Props2 = ensure_with_doteclair_config(Props),
     Props3 = ensure_with_hardcoded_config(Props2),
