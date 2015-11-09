@@ -68,27 +68,43 @@ The final config will contain this data:
 ```
 
 ## Order of Operations
+
 ### bootstrap
+The bootstrap step is optionally run to help the user set up the necessary __eclair__ config. Most 
+importantly this is the s3 `access_key` and `secret_key`. It's exercisted with `./eclair.erl bootstreap`,
+and command line arguments can be given (e.g. `-version 1.0.1`)
+
 1. Read command line arguments
 2. Read from `.eclair/secure.config`
 3. Read from `~/.s3cfg` (`access_key` and `secret_key` only)
 4. Read from input prompt
 5. Write `.eclair/secure.config`
+
 ### main
+This represents the main operation of __eclair__. It's exercised with `./eclair.erl`, and
+command line arguments can be given to override anything in `.eclair/secure.config`.
+
 #### Setup
+
 1. Read command lien arguments
 2. Read from `.eclair/secure.config`
 3. Read from hardcoded values in `eclair.erl` macros
+
 #### Gather data
+
 1. Get list of nodes from epmd
 2. Get hostname
 3. Find application details in an `ebin/*.app` file
+
 #### Build S3 paths
+
 1. Append application name from `*.app` file to eclair root
 2. List s3 common prefixes for the `version` subkey
 3. Find existing version-root that is closest to the version input. (if none, this step is skipped)
 4. Search for config with these subkeys: `root`, `input/tag1`, `input/tag2`, `epmd/node1`, `epmd/node2`, `host/this-host`
+
 #### For each path, merge config
+
 1. List all keys at this path
 2. Create subdirectories as needed
 3. If new file, `get` the file directly
