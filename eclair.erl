@@ -101,12 +101,32 @@ handle_file_collision(RelativePath, Bytes) ->
 try_file_merge(RelativePath, Bytes) ->
     % Merge proplists in Bytes with proplists at RelativePath. Clobbers
     % config formatting (output is always ~p
-    {ok, [OldProplist]} = file:consult(RelativePath),
-    {ok, [NewProplist]} = bytes_consult(Bytes),
+    {ok, OldProplist} = consult_for_single_proplist(RelativePath),
+    {ok, NewProplist} = bytes_consult_for_single_proplist(Bytes),
     MergedProplist = merge(NewProplist, OldProplist, use_source),
     {ok, Io} = file:open(RelativePath, [write]),
     file:write(Io, io_lib:format("~p.~n", [MergedProplist])),
     file:close(Io).
+
+consult_for_single_proplist(Path) ->
+    case file:consult(Path) of
+        {ok, [L]} when is_list(L) ->
+            {ok, L};
+        {ok, L} when is_list(L) ->
+            {ok, L};
+        R ->
+            R
+    end.
+
+bytes_consult_for_single_proplist(Bytes) ->
+    case bytes_consult(Bytes) of
+        {ok, [L]} when is_list(L) ->
+            {ok, L};
+        {ok, L} when is_list(L) ->
+            {ok, L};
+        R ->
+            R
+    end.
 
 bytes_consult(Bytes) ->
     % I could not find a way to consult bytes, so we use a temp file
