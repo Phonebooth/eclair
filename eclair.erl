@@ -6,6 +6,7 @@
 -define(AccessKey, "{{ access_key }}").
 -define(SecretKey, "{{ secret_key }}").
 -define(Root, "{{ root }}").
+-define(Tags, "{{ tags }}").
 
 -record(host_data, {
     hostname,
@@ -27,9 +28,17 @@ main(Args) ->
     Props3 = ensure_with_hardcoded_config(Props2),
     ok = application:start(ibrowse),
     HostData = gather_host_data(),
-    Path = build_path(proplists:get_value(root, Props3), HostData),
+    Root = proplists:get_value(root, Props3),
+    Tags = proplists:get_value(tags, Props3),
+    Paths = build_paths(Root, Tags, HostData),
     Config = mini_s3:new(proplists:get_value(access_key, Props3),
             proplists:get_value(secret_key, Props3)),
+    lists:foreach(fun(X) ->
+                io:format("Searching path ~p~n", [X]),
+                get_path(X, Config)
+        end, Paths).
+
+get_path(Path, Config) ->
     {Bucket, Prefix, Contents} = list_path(Path, Config),
     get_files(Bucket, Prefix, Contents, Config).
 
@@ -68,23 +77,28 @@ place_file(Obj, RelativePath) ->
         ok ->
             io:format("Placed new file ~s successfully~n", [RelativePath]);
         {error, eexist} ->
-            io:format("Merging in new data for ~s~n", [RelativePath]),
             handle_file_collision(RelativePath, Bytes)
     end.
 
 handle_file_collision(RelativePath, Bytes) ->
-    % Merge proplists in Bytes with proplists at RelativePath
-    {ok, OldProplists} = file:consult(RelativePath),
-    {ok, NewProplists} = bytes_consult(Bytes),
-    MergedProplists = lists:map(fun(X) ->
-                lists:foldl(fun(Y, A) -> merge(Y, A, use_source) end,
-                    X, NewProplists)
-        end,
-                OldProplists),
+    try try_file_merge(RelativePath, Bytes) of
+        Result ->
+            io:format("Merged in new data for ~s~n", [RelativePath]),
+            Result
+        catch _:_ ->
+            % Overwrite the file
+            io:format("Overwriting file ~p~n", [RelativePath]),
+            ok = file:write_file(RelativePath, Bytes, [])
+    end.
+
+try_file_merge(RelativePath, Bytes) ->
+    % Merge proplists in Bytes with proplists at RelativePath. Clobbers
+    % config formatting (output is always ~p
+    {ok, [OldProplist]} = file:consult(RelativePath),
+    {ok, [NewProplist]} = bytes_consult(Bytes),
+    MergedProplist = merge(NewProplist, OldProplist, use_source),
     {ok, Io} = file:open(RelativePath, [write]),
-    lists:foreach(fun(X) ->
-                file:write(Io, io_lib:format("~p.~n", [X]))
-        end, MergedProplists),
+    file:write(Io, io_lib:format("~p.~n", [MergedProplist])),
     file:close(Io).
 
 bytes_consult(Bytes) ->
@@ -123,14 +137,24 @@ gather_host_data() ->
         epmd_names=Names
     }.
 
-build_path(Root, #host_data{hostname=Hostname, cwd_app=#app_details{app=App}}) ->
+build_paths(Root, Tags, #host_data{hostname=Hostname, cwd_app=#app_details{app=App}}) ->
+    % Paths are searched in this order:
+    %      1. root path
+    %  [2-n]. tags
+    %    n+1. hostname
+    SplitTags = ["root"] ++ split_tags(Tags) ++ ["host/"++Hostname],
     AppName = case lists:keyfind(application, 1, App) of
         false ->
             undefined;
         Tuple ->
             element(2, Tuple)
     end,
-    filename:join([Root, Hostname, AppName]).
+    lists:map(fun(X) ->
+                filename:join([Root, AppName, X])
+        end, SplitTags).
+
+split_tags(Tags) ->
+    string:tokens(Tags, ",").
 
 get_cwd_app() ->
     {ok, Cwd} = file:get_cwd(),
@@ -178,9 +202,11 @@ bootstrap(Args) ->
     AccessKey = getline_arg(access_key, Props2),
     SecretKey = getline_arg(secret_key, Props2),
     Root = getline_arg(root, Props2),
+    Tags = getline_arg(tags, Props2),
     write_doteclair([{access_key, AccessKey},
                     {secret_key, SecretKey},
-                    {root, Root}]).
+                    {root, Root},
+                    {tags, Tags}]).
 
 s3cfg(Key) when Key =:= "access_key" orelse Key =:= "secret_key" ->
     os:cmd("awk -F= '/'"++Key++"'/ {print $2}' ~/.s3cfg | tr -d ' \\n'");
@@ -191,7 +217,13 @@ getline_arg(Key, Props) ->
         undefined ->
             case s3cfg(atom_to_list(Key)) of
                 [] ->
-                    string:strip(io:get_line(atom_to_list(Key)++"> "), right, $\n);
+                    case proplists:get_value(quiet, Props) of
+                        true ->
+                            io:format("Missing data and quiet flag given. Exiting with failure~n", []),
+                            halt(1);
+                        _ ->
+                            string:strip(io:get_line(atom_to_list(Key)++"> "), right, $\n)
+                    end;
                 V0 ->
                     io:format("Found ~p in .s3cfg.~n", [Key]),
                     V0
@@ -212,7 +244,8 @@ ensure_with_doteclair_config(Props) ->
 ensure_with_hardcoded_config(Props) ->
     ensure_proplist([{access_key, ?AccessKey},
                     {secret_key, ?SecretKey},
-                    {root, ?Root}], Props).
+                    {root, ?Root},
+                    {tags, ?Tags}], Props).
 
 ensure_proplist(From, To) ->
     Props2 = lists:foldl(fun({X, Y}, A) ->
