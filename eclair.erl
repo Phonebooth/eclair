@@ -278,14 +278,12 @@ split_tags(Tags) ->
 
 get_cwd_app() ->
     {ok, Cwd} = file:get_cwd(),
-    App = case filelib:wildcard(Cwd ++ "/ebin/*.app") of
-        [] ->
+    App = case get_appfile(Cwd) of
+        undefined ->
             undefined;
-        [AppFile] ->
+        AppFile ->
             {ok, PL} = file:consult(AppFile),
-            PL;
-        _ ->
-            undefined
+            PL
     end,
     Deps = case file:list_dir(Cwd ++ "/deps") of
         {error, enoent} ->
@@ -298,6 +296,42 @@ get_cwd_app() ->
         app=App,
         deps=Deps
     }}.
+
+get_appfile(Cwd) ->
+    case get_appfile_repo(Cwd) of
+        undefined ->
+            get_appfile_erlrelease(Cwd);
+        AppFile ->
+            AppFile
+    end.
+
+get_appfile_repo(Cwd) ->
+    case filelib:wildcard(Cwd ++ "/ebin/*.app") of
+        [] ->
+            undefined;
+        [AppFile] ->
+            AppFile;
+        _ ->
+            undefined
+    end.
+
+get_appfile_erlrelease(Cwd) ->
+    case filelib:wildcard(Cwd ++ "/bin/*_release") of
+        [] ->
+            undefined;
+        [Match|_] ->
+            case re:run(Match, "bin\/(?<app>.*)_release", [{capture, [app], list}]) of
+                {match, [App]} ->
+                    case filelib:wildcard(Cwd ++ "/lib/"++App++"*/**/"++App++".app") of
+                        [AppFile] ->
+                            AppFile;
+                        _ ->
+                            undefined
+                    end;
+                nomatch ->
+                    undefined
+            end
+    end.
 
 args_to_properties(Args) ->
     args_to_properties(Args, none, [], []).
