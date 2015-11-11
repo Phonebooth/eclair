@@ -37,20 +37,24 @@ release(Args) ->
     CwdApp = HostData#host_data.cwd_app,
     AppName = get_app_name(CwdApp),
     Cwd = CwdApp#app_details.cwd,
-    ReleaseTuple = get_RELEASES(Cwd),
-    ReleaseNum = element(3, ReleaseTuple),
-    DestRelDir = filename:join([Cwd, "releases", ReleaseNum]),
-    LibDir = get_app_lib_dir(AppName, ReleaseTuple),
+    try get_RELEASES(Cwd) of
+        ReleaseTuple ->
+            ReleaseNum = element(3, ReleaseTuple),
+            DestRelDir = filename:join([Cwd, "releases", ReleaseNum]),
+            LibDir = get_app_lib_dir(AppName, ReleaseTuple),
 
-    Props2 = proplists:delete(target, Props),
-    run(HostData, Props2 ++ [{target, LibDir}]),
+            Props2 = proplists:delete(target, Props),
+            run(HostData, Props2 ++ [{target, LibDir}]),
 
-    SrcRelDir = filename:join([LibDir, "rel"]),
-    SrcRelFiles = filelib:wildcard(SrcRelDir ++ "/*"),
-    lists:foreach(fun(X) ->
-                Base = lists:last(filename:split(X)),
-                place_file(DestRelDir, X, Base)
-        end, SrcRelFiles).
+            SrcRelDir = filename:join([LibDir, "rel"]),
+            SrcRelFiles = filelib:wildcard(SrcRelDir ++ "/*"),
+            lists:foreach(fun(X) ->
+                        Base = lists:last(filename:split(X)),
+                        place_file(DestRelDir, X, Base)
+                end, SrcRelFiles)
+    catch _:_ ->
+        run(HostData, Props)
+    end.
 
 get_run_props(Args) ->
     {Props, _Data} = args_to_properties(Args),

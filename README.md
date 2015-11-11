@@ -110,3 +110,8 @@ command line arguments can be given to override anything in `.eclair/secure.conf
 3. If new file, `get` the file directly
 4. If existing file, attempt a `file:consult` on both, and merge
 5. If `consult` fails, overwrite existing file
+
+### release
+The release command does everything that the main does, but will search for the existence of
+releases/RELEASES to aid in the search for the app's root directory. If releases/RELEASES does
+not exist, then the current directory of eclair.erl is considered the root.
