@@ -23,12 +23,43 @@
 
 main(["bootstrap"|Args]) ->
     bootstrap(Args);
+main(["release"|Args]) ->
+    release(Args);
 main(Args) ->
+    Props3 = get_run_props(Args),
+    HostData = gather_host_data(),
+    run(HostData, Props3).
+
+release(Args) ->
+    Props = get_run_props(Args),
+    HostData = gather_host_data(),
+
+    CwdApp = HostData#host_data.cwd_app,
+    AppName = get_app_name(CwdApp),
+    Cwd = CwdApp#app_details.cwd,
+    ReleaseTuple = get_RELEASES(Cwd),
+    ReleaseNum = element(3, ReleaseTuple),
+    DestRelDir = filename:join([Cwd, "releases", ReleaseNum]),
+    LibDir = get_app_lib_dir(AppName, ReleaseTuple),
+
+    Props2 = proplists:delete(target, Props),
+    run(HostData, Props2 ++ [{target, LibDir}]),
+
+    SrcRelDir = filename:join([LibDir, "rel"]),
+    SrcRelFiles = filelib:wildcard(SrcRelDir ++ "/*"),
+    lists:foreach(fun(X) ->
+                Base = lists:last(filename:split(X)),
+                place_file(DestRelDir, X, Base)
+        end, SrcRelFiles).
+
+get_run_props(Args) ->
     {Props, _Data} = args_to_properties(Args),
     Props2 = ensure_with_doteclair_config(Props),
     Props3 = ensure_with_hardcoded_config(Props2),
+    Props3.
+
+run(HostData, Props3) ->
     ok = application:start(ibrowse),
-    HostData = gather_host_data(),
     Root = proplists:get_value(root, Props3),
     Version = normalize_version_input(proplists:get_value(version, Props3)),
     Tags = proplists:get_value(tags, Props3),
@@ -37,12 +68,13 @@ main(Args) ->
     Paths = build_paths(Root, Version, Tags, HostData, Config),
     lists:foreach(fun(X) ->
                 io:format("Searching path ~p~n", [X]),
-                get_path(X, Config)
+                Target = proplists:get_value(target, Props3, ""),
+                get_path(Target, X, Config)
         end, Paths).
 
-get_path(Path, Config) ->
+get_path(Target, Path, Config) ->
     {Bucket, Prefix, Contents} = list_path(Path, Config),
-    get_files(Bucket, Prefix, Contents, Config).
+    get_files(Target, Bucket, Prefix, Contents, Config).
 
 list_path(Path, Config) ->
     {Bucket, Prefix} = s3split_path(Path),
@@ -63,48 +95,63 @@ s3split_path(Path) ->
     Prefix = filename:join(tl(Split)),
     {Bucket, Prefix}.
 
-get_files(_Bucket, _Prefix, [], _Config) ->
+get_files(_Target, _Bucket, _Prefix, [], _Config) ->
     ok;
-get_files(Bucket, Prefix, [X|Contents], Config) ->
+get_files(Target, Bucket, Prefix, [X|Contents], Config) ->
     Key = proplists:get_value(key, X),
     Obj = mini_s3:get_object(Bucket, Key, [], Config),
     case get_relative_path(Prefix, Key) of
         {ok, RelativePath} ->
-            place_file(Obj, RelativePath);
+            place_obj(Target, Obj, RelativePath);
         {error, prefix_mismatch} ->
             io:format("Skipping file due to prefix mismatch: ~s~n", [Key])
     end,
-    get_files(Bucket, Prefix, Contents, Config).
+    get_files(Target, Bucket, Prefix, Contents, Config).
 
-place_file(Obj, RelativePath) ->
-    Dirs = filename:split(RelativePath),
-    ok = make_path(Dirs, ""),
+place_obj(Target, Obj, RelativePath) ->
     Bytes = proplists:get_value(content, Obj),
-    case file:write_file(RelativePath, Bytes, [exclusive]) of
+    place_bytes(Target, Bytes, RelativePath).
+
+place_file(Target, File, RelativePath) ->
+    {ok, Bytes} = file:read_file(File),
+    place_bytes(Target, Bytes, RelativePath).
+
+place_bytes(Target, Bytes, RelativePath) ->
+    Dirs = filename:split(RelativePath),
+    ok = make_path(Dirs, Target),
+    TgtFile = tgt(Target, RelativePath),
+    case file:write_file(TgtFile, Bytes, [exclusive]) of
         ok ->
-            io:format("Placed new file ~s successfully~n", [RelativePath]);
+            io:format("Placed new file ~s successfully~n", [TgtFile]);
         {error, eexist} ->
-            handle_file_collision(RelativePath, Bytes)
+            handle_file_collision(Target, RelativePath, Bytes)
     end.
 
-handle_file_collision(RelativePath, Bytes) ->
-    try try_file_merge(RelativePath, Bytes) of
+tgt("", RelativePath) ->
+    RelativePath;
+tgt(Target, RelativePath) ->
+    filename:join([Target, RelativePath]).
+
+handle_file_collision(Target, RelativePath, Bytes) ->
+    try try_file_merge(Target, RelativePath, Bytes) of
         Result ->
             io:format("Merged in new data for ~s~n", [RelativePath]),
             Result
         catch _:_ ->
             % Overwrite the file
-            io:format("Overwriting file ~p~n", [RelativePath]),
-            ok = file:write_file(RelativePath, Bytes, [])
+            TgtFile = tgt(Target, RelativePath),
+            io:format("Overwriting file ~p~n", [TgtFile]),
+            ok = file:write_file(TgtFile, Bytes, [])
     end.
 
-try_file_merge(RelativePath, Bytes) ->
+try_file_merge(Target, RelativePath, Bytes) ->
     % Merge proplists in Bytes with proplists at RelativePath. Clobbers
     % config formatting (output is always ~p
-    {ok, OldProplist} = consult_for_single_proplist(RelativePath),
+    TgtFile = tgt(Target, RelativePath),
+    {ok, OldProplist} = consult_for_single_proplist(TgtFile),
     {ok, NewProplist} = bytes_consult_for_single_proplist(Bytes),
     MergedProplist = merge(NewProplist, OldProplist, use_source),
-    {ok, Io} = file:open(RelativePath, [write]),
+    {ok, Io} = file:open(TgtFile, [write]),
     file:write(Io, io_lib:format("~p.~n", [MergedProplist])),
     file:close(Io).
 
@@ -142,7 +189,10 @@ make_path([_], _) ->
     ok;
 make_path([Dir|Dirs], Path) ->
     DirPath = case Path of "" -> Dir; _ -> filename:join([Path, Dir]) end,
-    file:make_dir(DirPath),
+    case file:make_dir(DirPath) of
+        ok -> ok;
+        {error, eexist} -> ok
+    end,
     make_path(Dirs, DirPath).
 
 get_relative_path(Prefix, Key) ->
@@ -172,12 +222,7 @@ build_paths(Root, Version, Tags, #host_data{hostname=Hostname,
     %      2. tags
     %      3. epmd nodes
     %      4. hostname
-    AppName = case lists:keyfind(application, 1, App) of
-        false ->
-            undefined;
-        Tuple ->
-            element(2, Tuple)
-    end,
+    AppName = get_app_name(App),
     NewRoot = case find_closest_version(Version, Root, App, AppName, Config) of
         {error, none} ->
             filename:join([Root, AppName]);
@@ -191,6 +236,16 @@ build_paths(Root, Version, Tags, #host_data{hostname=Hostname,
     lists:map(fun(X) ->
                 filename:join([NewRoot, X])
         end, SplitTags).
+
+get_app_name(#app_details{app=App}) ->
+    get_app_name(App);
+get_app_name(App) ->
+    case lists:keyfind(application, 1, App) of
+        false ->
+            undefined;
+        Tuple ->
+            element(2, Tuple)
+    end.
 
 find_closest_version(none, _, _, _, _) ->
     {error, none};
@@ -315,22 +370,34 @@ get_appfile_repo(Cwd) ->
             undefined
     end.
 
+get_RELEASES(Cwd) ->
+    {ok, [[ReleaseTuple]]} = file:consult(filename:join([Cwd, "releases", "RELEASES"])),
+    ReleaseTuple.
+
 get_appfile_erlrelease(Cwd) ->
-    case filelib:wildcard(Cwd ++ "/bin/*_release") of
-        [] ->
-            undefined;
-        [Match|_] ->
-            case re:run(Match, "bin\/(?<app>.*)_release", [{capture, [app], list}]) of
-                {match, [App]} ->
-                    case filelib:wildcard(Cwd ++ "/lib/"++App++"*/**/"++App++".app") of
-                        [AppFile] ->
-                            AppFile;
-                        _ ->
-                            undefined
-                    end;
-                nomatch ->
-                    undefined
-            end
+    ReleaseTuple = get_RELEASES(Cwd),
+    ReleaseName = element(2, ReleaseTuple),
+    case re:run(ReleaseName, "(?<app>.*)_release", [{capture, [app], list}]) of
+        {match, [AppName]} ->
+            case get_app_lib_dir(AppName, ReleaseTuple) of
+                undefined ->
+                    undefined;
+                RelPath ->
+                    filename:join([Cwd, RelPath, "ebin", AppName++".app"])
+            end;
+        nomatch ->
+            undefined
+    end.
+
+get_app_lib_dir(AppName, ReleaseTuple) when is_list(AppName) ->
+    get_app_lib_dir(list_to_atom(AppName), ReleaseTuple);
+get_app_lib_dir(AppName, ReleaseTuple) ->
+    VersionList = element(5, ReleaseTuple),
+    case lists:keyfind(AppName, 1, VersionList) of
+        {_, _Vsn, Path} ->
+            Path;
+        _ ->
+            undefined
     end.
 
 args_to_properties(Args) ->
@@ -370,7 +437,7 @@ normalize_version_input("auto") -> auto;
 normalize_version_input(V) -> V.
 
 s3cfg(Key) when Key =:= "access_key" orelse Key =:= "secret_key" ->
-    S3Cfg = "~/.s3cfga",
+    S3Cfg = "~/.s3cfg",
     case re:run(os:cmd(S3Cfg), "No such file", [{capture, none}]) of
         match ->
             [];
