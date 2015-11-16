@@ -28,7 +28,8 @@ main(["release"|Args]) ->
 main(Args) ->
     Props3 = get_run_props(Args),
     HostData = gather_host_data(),
-    run(HostData, Props3).
+    Files = run_files(HostData, Props3),
+    run_templates(HostData, Props3, Files).
 
 release(Args) ->
     Props = get_run_props(Args),
@@ -44,16 +45,19 @@ release(Args) ->
             LibDir = get_app_lib_dir(AppName, ReleaseTuple),
 
             Props2 = proplists:delete(target, Props),
-            run(HostData, Props2 ++ [{target, LibDir}]),
+            Props3 = Props2 ++ [{target, LibDir}],
+            Files = run_files(HostData, Props3),
 
             SrcRelDir = filename:join([LibDir, "rel"]),
             SrcRelFiles = filelib:wildcard(SrcRelDir ++ "/*"),
-            lists:foreach(fun(X) ->
+            RelFiles = lists:foldl(fun(X, Fi) ->
                         Base = lists:last(filename:split(X)),
-                        place_file(DestRelDir, X, Base)
-                end, SrcRelFiles)
+                        [place_file(DestRelDir, X, Base)|Fi]
+                end, [], SrcRelFiles),
+            run_templates(HostData, Props3, Files ++ RelFiles)
     catch _:_ ->
-        run(HostData, Props)
+        Files = run_files(HostData, Props),
+        run_templates(HostData, Props, Files)
     end.
 
 get_run_props(Args) ->
@@ -62,7 +66,7 @@ get_run_props(Args) ->
     Props3 = ensure_with_hardcoded_config(Props2),
     Props3.
 
-run(HostData, Props3) ->
+run_files(HostData, Props3) ->
     ok = application:start(ibrowse),
     Root = proplists:get_value(root, Props3),
     Version = normalize_version_input(proplists:get_value(version, Props3)),
@@ -70,15 +74,45 @@ run(HostData, Props3) ->
     Config = mini_s3:new(proplists:get_value(access_key, Props3),
             proplists:get_value(secret_key, Props3)),
     Paths = build_paths(Root, Version, Tags, HostData, Config),
-    lists:foreach(fun(X) ->
+    lists:foldl(fun(X, Files) ->
                 io:format("Searching path ~p~n", [X]),
                 Target = proplists:get_value(target, Props3, ""),
-                get_path(Target, X, Config)
-        end, Paths).
+                Files ++ get_path(Target, X, Config)
+        end, [], Paths).
+
+run_templates(HostData, Props, Files) ->
+    UniqueFiles = lists:usort(Files),
+    lists:foreach(fun(X) ->
+                {ok, Bytes} = file:read_file(X),
+                case re:run(Bytes, "\\(\\(\\s*@eclair:(?<template>[^\\s\\)]+)\\s*\\)\\)",
+                        [{capture, [template], binary}, global]) of
+                    {match, ListOfTemplateKeyLists} ->
+                        TemplateKeys = lists:usort(lists:flatten(ListOfTemplateKeyLists)),
+                        FinalBytes = lists:foldl(fun(X, NewBytes) ->
+                                    fill_template(X, HostData, Props, NewBytes)
+                            end, Bytes, TemplateKeys),
+                        file:write_file(X, FinalBytes);
+                    nomatch ->
+                        ok
+                end
+        end, UniqueFiles).
+
+fill_template(<<"target">>, HostData, Props, Bytes) ->
+    Target = get_abs_target(HostData, Props),
+    io:format("Filling template 'target' with '~s'~n", [Target]),
+    re:replace(Bytes, "\\(\\(\\s*@eclair:target\\s*\\)\\)", Target, [global]).
+
+get_abs_target(#host_data{cwd_app= #app_details{cwd=Cwd}}, Props) ->
+    case proplists:get_value(target, Props) of
+        undefined ->
+            Cwd;
+        Target ->
+            filename:join([Cwd, Target])
+    end.
 
 get_path(Target, Path, Config) ->
     {Bucket, Prefix, Contents} = list_path(Path, Config),
-    get_files(Target, Bucket, Prefix, Contents, Config).
+    get_files(Target, Bucket, Prefix, Contents, Config, []).
 
 list_path(Path, Config) ->
     {Bucket, Prefix} = s3split_path(Path),
@@ -99,18 +133,19 @@ s3split_path(Path) ->
     Prefix = filename:join(tl(Split)),
     {Bucket, Prefix}.
 
-get_files(_Target, _Bucket, _Prefix, [], _Config) ->
-    ok;
-get_files(Target, Bucket, Prefix, [X|Contents], Config) ->
+get_files(_Target, _Bucket, _Prefix, [], _Config, Files) ->
+    lists:reverse(Files);
+get_files(Target, Bucket, Prefix, [X|Contents], Config, Files) ->
     Key = proplists:get_value(key, X),
     Obj = mini_s3:get_object(Bucket, Key, [], Config),
-    case get_relative_path(Prefix, Key) of
+    NewFiles = case get_relative_path(Prefix, Key) of
         {ok, RelativePath} ->
-            place_obj(Target, Obj, RelativePath);
+            [place_obj(Target, Obj, RelativePath)|Files];
         {error, prefix_mismatch} ->
-            io:format("Skipping file due to prefix mismatch: ~s~n", [Key])
+            io:format("Skipping file due to prefix mismatch: ~s~n", [Key]),
+            Files
     end,
-    get_files(Target, Bucket, Prefix, Contents, Config).
+    get_files(Target, Bucket, Prefix, Contents, Config, NewFiles).
 
 place_obj(Target, Obj, RelativePath) ->
     Bytes = proplists:get_value(content, Obj),
@@ -126,7 +161,8 @@ place_bytes(Target, Bytes, RelativePath) ->
     TgtFile = tgt(Target, RelativePath),
     case file:write_file(TgtFile, Bytes, [exclusive]) of
         ok ->
-            io:format("Placed new file ~s successfully~n", [TgtFile]);
+            io:format("Placed new file ~s successfully~n", [TgtFile]),
+            TgtFile;
         {error, eexist} ->
             handle_file_collision(Target, RelativePath, Bytes)
     end.
@@ -138,14 +174,15 @@ tgt(Target, RelativePath) ->
 
 handle_file_collision(Target, RelativePath, Bytes) ->
     try try_file_merge(Target, RelativePath, Bytes) of
-        Result ->
+        File ->
             io:format("Merged in new data for ~s~n", [RelativePath]),
-            Result
+            File
         catch _:_ ->
             % Overwrite the file
             TgtFile = tgt(Target, RelativePath),
             io:format("Overwriting file ~p~n", [TgtFile]),
-            ok = file:write_file(TgtFile, Bytes, [])
+            ok = file:write_file(TgtFile, Bytes, []),
+            TgtFile
     end.
 
 try_file_merge(Target, RelativePath, Bytes) ->
@@ -157,7 +194,8 @@ try_file_merge(Target, RelativePath, Bytes) ->
     MergedProplist = merge(NewProplist, OldProplist, use_source),
     {ok, Io} = file:open(TgtFile, [write]),
     file:write(Io, io_lib:format("~p.~n", [MergedProplist])),
-    file:close(Io).
+    file:close(Io),
+    TgtFile.
 
 consult_for_single_proplist(Path) ->
     case file:consult(Path) of
