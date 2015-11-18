@@ -286,7 +286,19 @@ get_app_name(App) ->
         false ->
             undefined;
         Tuple ->
-            element(2, Tuple)
+            case element(2, Tuple) of
+                nitrogen ->
+                    Details = element(3, Tuple),
+                    {Mod, _} = proplists:get_value(mod, Details),
+                    case re:run(atom_to_list(Mod), "(?<app>.*)_app", [{capture, [app], list}]) of
+                        {match, [Match]} ->
+                            list_to_atom(Match);
+                        nomatch ->
+                            nitrogen
+                    end;
+                Name ->
+                    Name
+            end
     end.
 
 find_closest_version(none, _, _, _, _) ->
@@ -405,7 +417,14 @@ get_appfile(Cwd) ->
 get_appfile_repo(Cwd) ->
     case filelib:wildcard(Cwd ++ "/ebin/*.app") of
         [] ->
-            undefined;
+            case filelib:wildcard(Cwd ++ "/nitrogen/site/ebin/*.app") of
+                [] ->
+                    undefined;
+                [NitAppFile] ->
+                    NitAppFile;
+                _ ->
+                    undefined
+            end;
         [AppFile] ->
             AppFile;
         _ ->
