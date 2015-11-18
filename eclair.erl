@@ -88,8 +88,8 @@ run_templates(HostData, Props, Files) ->
                         [{capture, [template], binary}, global]) of
                     {match, ListOfTemplateKeyLists} ->
                         TemplateKeys = lists:usort(lists:flatten(ListOfTemplateKeyLists)),
-                        FinalBytes = lists:foldl(fun(X, NewBytes) ->
-                                    fill_template(X, HostData, Props, NewBytes)
+                        FinalBytes = lists:foldl(fun(X2, NewBytes) ->
+                                    fill_template(X2, HostData, Props, NewBytes)
                             end, Bytes, TemplateKeys),
                         file:write_file(X, FinalBytes);
                     nomatch ->
