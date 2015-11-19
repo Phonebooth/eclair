@@ -11,6 +11,7 @@
 
 -record(host_data, {
     hostname,
+    hostfqdn,
     cwd_app,
     epmd_names
     }).
@@ -248,15 +249,18 @@ get_relative_path(Prefix, Key) ->
 gather_host_data() ->
     EpmdModule = net_kernel:epmd_module(),
     {ok, Host} = inet:gethostname(),
+    {ok, {hostent, Fqdn, _, _, _, _}} = inet:gethostbyname(Host),
     {ok, CwdApp} = get_cwd_app(),
     {ok, Names} = EpmdModule:names(),
     #host_data{
         hostname=Host,
+        hostfqdn=Fqdn,
         cwd_app=CwdApp,
         epmd_names=Names
     }.
 
 build_paths(Root, Version, Tags, #host_data{hostname=Hostname,
+        hostfqdn=Fqdn,
         cwd_app=#app_details{app=App},
         epmd_names=EpmdNames}, Config) ->
     % Paths are searched in this order:
@@ -264,6 +268,7 @@ build_paths(Root, Version, Tags, #host_data{hostname=Hostname,
     %      2. tags
     %      3. epmd nodes
     %      4. hostname
+    %      5. fqdn
     AppName = get_app_name(App),
     NewRoot = case find_closest_version(Version, Root, App, AppName, Config) of
         {error, none} ->
@@ -274,7 +279,8 @@ build_paths(Root, Version, Tags, #host_data{hostname=Hostname,
     SplitTags = ["root"] ++ 
                 split_tags(Tags) ++ 
                 [ "epmd/" ++ X || {X,_} <- EpmdNames ] ++
-                ["host/"++Hostname],
+                ["host/"++Hostname] ++
+                ["fqdn/" ++ Fqdn],
     lists:map(fun(X) ->
                 filename:join([NewRoot, X])
         end, SplitTags).
