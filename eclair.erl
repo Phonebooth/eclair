@@ -98,10 +98,15 @@ run_templates(HostData, Props, Files) ->
                 end
         end, UniqueFiles).
 
-fill_template(<<"target">>, HostData, Props, Bytes) ->
+fill_template(T= <<"target">>, HostData, Props, Bytes) ->
     Target = get_abs_target(HostData, Props),
-    io:format("Filling template 'target' with '~s'~n", [Target]),
-    re:replace(Bytes, "\\(\\(\\s*@eclair:target\\s*\\)\\)", Target, [global]).
+    fill_template(Bytes, T, Target);
+fill_template(T= <<"hostname">>, HostData=#host_data{hostname=Hostname}, Props, Bytes) ->
+    fill_template(Bytes, T, Hostname).
+
+fill_template(Bytes, Template, Data) when is_binary(Template) ->
+    io:format("Filling template '~s' with '~s'~n", [binary_to_list(Template), Data]),
+    re:replace(Bytes, "\\(\\(\\s*@eclair:"++binary_to_list(Template)++"\\s*\\)\\)", Data, [global]).
 
 get_abs_target(#host_data{cwd_app= #app_details{cwd=Cwd}}, Props) ->
     case proplists:get_value(target, Props) of
