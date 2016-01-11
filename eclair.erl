@@ -528,7 +528,7 @@ getline_arg(Key, Props) ->
                 [] ->
                     case proplists:get_value(quiet, Props) of
                         true ->
-                            io:format("Missing data and quiet flag given. Exiting with failure~n", []),
+                            io:format("Missing data for ~p and quiet flag given. Exiting with failure~n", [Key]),
                             halt(1);
                         _ ->
                             string:strip(io:get_line(prompt(Key)), right, $\n)
