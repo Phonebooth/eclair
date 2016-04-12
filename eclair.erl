@@ -22,6 +22,8 @@
         deps
     }).
 
+main(["test"|Args]) ->
+    test(Args);
 main(["bootstrap"|Args]) ->
     bootstrap(Args);
 main(["release"|Args]) ->
@@ -101,7 +103,7 @@ run_templates(HostData, Props, Files) ->
 fill_template(T= <<"target">>, HostData, Props, Bytes) ->
     Target = get_abs_target(HostData, Props),
     fill_template(Bytes, T, Target);
-fill_template(T= <<"hostname">>, HostData=#host_data{hostname=Hostname}, Props, Bytes) ->
+fill_template(T= <<"hostname">>, _HostData=#host_data{hostname=Hostname}, _Props, Bytes) ->
     fill_template(Bytes, T, Hostname).
 
 fill_template(Bytes, Template, Data) when is_binary(Template) ->
@@ -586,13 +588,26 @@ merge(Src, Dest, MismatchPolicy) ->
     % thus prefering the source data.
     AllKeyset = sets:union(SrcKeyset, DestKeyset),
     AllKeylist = sets:to_list(AllKeyset),
-    Stems = [ lists:sublist(X, 1, length(X)-1) || X <- AllKeylist ],
-    Leaves = [ lists:last(X) || X <- AllKeylist ],
-    ShallowLeaves = lists:filter(fun(X) ->
-                lists:any(fun(Z) -> Z end, [ lists:member(X, Y) || Y <- Stems ])
-        end, Leaves),
-    ShallowPaths = lists:filter(fun(X) ->
-                lists:member(lists:last(X), ShallowLeaves)
+
+
+    % We need to answer this question:
+    %  Do any of the keylists overlap with any others in a way that would
+    %  override the most deep item?
+    %    1 : [a,b,c,d,e],
+    %    2 : [a,b,c]
+    %  2 matches 1 in the form [true,true,true,false,false]. Since the
+    %  first 3 are true and the length is 5 (greater than 3), then we
+    %  have a dangerous overlap.
+    IsDangerousOverlap = fun
+        (A, B) when length(A) >= length(B) ->
+            false;
+        (A, B) ->
+            ShortB = lists:sublist(B, 1, length(A)),
+            A =:= ShortB
+    end,
+    ShallowPaths = lists:filter(
+        fun(X) ->
+                lists:any(fun(Y) -> IsDangerousOverlap(X, Y) end, AllKeylist)
         end, AllKeylist),
 
     {AddsKeyset2, UpdatesKeyset2, DestPaths2} = 
@@ -679,46 +694,65 @@ ensure_proplist_keypath({[Key|KeyPath], Value}, Proplist) ->
             lists:sort([{Key, Sub2}|proplists:delete(Key, Proplist)])
     end.
 
-%test_merge() ->
-%    Src = [{a, [
-%                {aa, "srcaa"}
-%            ]},
-%           {b,
-%               [
-%                   {ba,
-%                       [
-%                           {baa, "srcbaa"}
-%                       ]
-%                   }
-%               ]
-%           },
-%           {c, "c"}],
-%      Dest = [{a, 
-%                [
-%                    {aa, [
-%                            {aaa, "aaa"}
-%                        ]}, 
-%                    {ab,"ab"}
-%                ]
-%            },
-%          {b,
-%              [
-%                  {ba, [
-%                          {baa, "baa"},
-%                          {bab, "bab"}
-%                      ]
-%                  },
-%                  {bb, "bb"},
-%                  {bc, [
-%                          {bca, [
-%                                  {bcaa, "bcaa"}
-%                              ]
-%                          }
-%                      ]
-%                  }
-%              ]
-%          },
-%          {d, 1}
-%        ],
-%        [{use_source, merge(Src, Dest, use_source)},
-%            {favor_depth, merge(Src, Dest, favor_depth)}].
+test(_) ->
+    Src = [{a, [
+                {aa, "srcaa"}
+            ]},
+           {b,
+               [
+                   {ba,
+                       [
+                           {baa, "srcbaa"}
+                       ]
+                   }
+               ]
+           },
+           {c, "c"}],
+      Dest = [{a, 
+                [
+                    {aa, [
+                            {aaa, "aaa"}
+                        ]}, 
+                    {ab,"ab"}
+                ]
+            },
+          {b,
+              [
+                  {ba, [
+                          {baa, "baa"},
+                          {bab, "bab"}
+                      ]
+                  },
+                  {bb, "bb"},
+                  {bc, [
+                          {bca, [
+                                  {bcaa, "bcaa"}
+                              ]
+                          }
+                      ]
+                  }
+              ]
+          },
+          {d, 1}
+        ],
+    io:format("[src]~n", []),
+    io:format("    ~p~n", [Src]),
+    io:format("[dest]~n", []),
+    io:format("    ~p~n", [Dest]),
+    Res = [{use_source, merge(Src, Dest, use_source)},
+        {favor_depth, merge(Src, Dest, favor_depth)}],
+    io:format("[test]~n", []),
+    io:format("    ~p~n", [Res]),
+    Expect = [{use_source,[{a,[{aa,"srcaa"},{ab,"ab"}]},
+                {b,[{ba,[{baa,"srcbaa"},{bab,"bab"}]},
+                        {bb,"bb"},
+                        {bc,[{bca,[{bcaa,"bcaa"}]}]}]},
+                {c,"c"},
+                {d,1}]},
+        {favor_depth,[{a,[{aa,[{aaa,"aaa"}]},{ab,"ab"}]},
+                {b,[{ba,[{baa,"srcbaa"},{bab,"bab"}]},
+                        {bb,"bb"},
+                        {bc,[{bca,[{bcaa,"bcaa"}]}]}]},
+                {c,"c"},
+                {d,1}]}],
+    io:format("[result] ~s~n", [if Expect =:= Res -> "PASS"; true -> "FAIL" end]).
