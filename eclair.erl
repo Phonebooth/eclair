@@ -430,13 +430,18 @@ get_appfile(Cwd) ->
 get_appfile_repo(Cwd) ->
     case filelib:wildcard(Cwd ++ "/ebin/*.app") of
         [] ->
-            case filelib:wildcard(Cwd ++ "/nitrogen/site/ebin/*.app") of
+            case filelib:wildcard(Cwd ++ "/*/ebin/*.app") of
                 [] ->
-                    undefined;
-                [NitAppFile] ->
-                    NitAppFile;
-                _ ->
-                    undefined
+                    case filelib:wildcard(Cwd ++ "/nitrogen/site/ebin/*.app") of
+                        [] ->
+                            undefined;
+                        [NitAppFile] ->
+                            NitAppFile;
+                        _ ->
+                            undefined
+                    end;
+                [AppFile] ->
+                    AppFile
             end;
         [AppFile] ->
             AppFile;
