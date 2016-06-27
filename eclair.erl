@@ -258,7 +258,7 @@ gather_host_data() ->
     {ok, Host} = inet:gethostname(),
     {ok, {hostent, Fqdn, _, _, _, _}} = inet:gethostbyname(Host),
     {ok, CwdApp} = get_cwd_app(),
-    Nmes2 = case EpmdModule:names() of
+    Names2 = case EpmdModule:names() of
         {error, address} ->
             [];
         {ok, Names} ->
