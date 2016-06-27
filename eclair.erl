@@ -258,12 +258,17 @@ gather_host_data() ->
     {ok, Host} = inet:gethostname(),
     {ok, {hostent, Fqdn, _, _, _, _}} = inet:gethostbyname(Host),
     {ok, CwdApp} = get_cwd_app(),
-    {ok, Names} = EpmdModule:names(),
+    Nmes2 = case EpmdModule:names() of
+        {error, address} ->
+            [];
+        {ok, Names} ->
+            Names
+    end,
     #host_data{
         hostname=Host,
         hostfqdn=Fqdn,
         cwd_app=CwdApp,
-        epmd_names=Names
+        epmd_names=Names2
     }.
 
 build_paths(Root, Version, Tags, #host_data{hostname=Hostname,
