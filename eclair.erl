@@ -8,6 +8,7 @@
 -define(Root, "{{ root }}").
 -define(Version, "{{ version }}").
 -define(Tags, "{{ tags }}").
+-define(App, "{{ app }}").
 
 -record(host_data, {
     hostname,
@@ -39,7 +40,7 @@ release(Args) ->
     HostData = gather_host_data(),
 
     CwdApp = HostData#host_data.cwd_app,
-    AppName = get_app_name(CwdApp),
+    AppName = get_app_name(CwdApp, Props),
     Cwd = CwdApp#app_details.cwd,
     try get_RELEASES(Cwd) of
         ReleaseTuple ->
@@ -74,9 +75,10 @@ run_files(HostData, Props3) ->
     Root = proplists:get_value(root, Props3),
     Version = normalize_version_input(proplists:get_value(version, Props3)),
     Tags = proplists:get_value(tags, Props3),
+    App = proplists:get_value(app, Props3),
     Config = mini_s3:new(proplists:get_value(access_key, Props3),
             proplists:get_value(secret_key, Props3)),
-    Paths = build_paths(Root, Version, Tags, HostData, Config),
+    Paths = build_paths(Root, App, Version, Tags, HostData, Config),
     lists:foldl(fun(X, Files) ->
                 io:format("Searching path ~p~n", [X]),
                 Target = proplists:get_value(target, Props3, ""),
@@ -271,7 +273,7 @@ gather_host_data() ->
         epmd_names=Names2
     }.
 
-build_paths(Root, Version, Tags, #host_data{hostname=Hostname,
+build_paths(Root, AppNameIn, Version, Tags, #host_data{hostname=Hostname,
         hostfqdn=Fqdn,
         cwd_app=#app_details{app=App},
         epmd_names=EpmdNames}, Config) ->
@@ -281,7 +283,7 @@ build_paths(Root, Version, Tags, #host_data{hostname=Hostname,
     %      3. epmd nodes
     %      4. hostname
     %      5. fqdn
-    AppName = get_app_name(App),
+    AppName = get_app_name(App, AppNameIn),
     NewRoot = case find_closest_version(Version, Root, App, AppName, Config) of
         {error, none} ->
             filename:join([Root, AppName]);
@@ -297,9 +299,15 @@ build_paths(Root, Version, Tags, #host_data{hostname=Hostname,
                 filename:join([NewRoot, X])
         end, SplitTags).
 
-get_app_name(#app_details{app=App}) ->
-    get_app_name(App);
-get_app_name(App) ->
+get_app_name(App, "undef"++_) ->
+    get_app_name(App, undefined);
+get_app_name(_, AppName) when is_atom(AppName) andalso AppName =/= undefined ->
+    AppName;
+get_app_name(_, AppName) when is_list(AppName) ->
+    list_to_atom(AppName);
+get_app_name(#app_details{app=App}, AppName) ->
+    get_app_name(App, AppName);
+get_app_name(App, _) ->
     case lists:keyfind(application, 1, App) of
         false ->
             undefined;
@@ -509,11 +517,13 @@ bootstrap(Args) ->
     Root = getline_arg(root, Props2),
     Version = normalize_version_input(getline_arg(version, Props2)),
     Tags = getline_arg(tags, Props2),
+    AppName = getline_arg(app, Props2, undefined),
     write_doteclair([{access_key, AccessKey},
                     {secret_key, SecretKey},
                     {root, Root},
                     {version, Version},
-                    {tags, Tags}]).
+                    {tags, Tags},
+                    {app, AppName}]).
 
 normalize_version_input("") -> none;
 normalize_version_input("none") -> none;
@@ -534,14 +544,22 @@ prompt(version) -> "version (none|auto|x.y.z)> ";
 prompt(Key) -> atom_to_list(Key) ++ "> ".
 
 getline_arg(Key, Props) ->
+    getline_arg(Key, Props, no_default).
+
+getline_arg(Key, Props, Default) ->
     case proplists:get_value(Key, Props) of
         undefined ->
             case s3cfg(atom_to_list(Key)) of
                 [] ->
                     case proplists:get_value(quiet, Props) of
                         true ->
-                            io:format("Missing data for ~p and quiet flag given. Exiting with failure~n", [Key]),
-                            halt(1);
+                            case Default of
+                                no_default ->
+                                    io:format("Missing data for ~p and quiet flag given. Exiting with failure~n", [Key]),
+                                    halt(1);
+                                _ ->
+                                    Default
+                            end;
                         _ ->
                             string:strip(io:get_line(prompt(Key)), right, $\n)
                     end;
@@ -567,7 +585,8 @@ ensure_with_hardcoded_config(Props) ->
                     {secret_key, ?SecretKey},
                     {root, ?Root},
                     {version, ?Version},
-                    {tags, ?Tags}], Props).
+                    {tags, ?Tags},
+                    {app, ?App}], Props).
 
 ensure_proplist(From, To) ->
     Props2 = lists:foldl(fun({X, Y}, A) ->
