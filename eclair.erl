@@ -40,7 +40,7 @@ release(Args) ->
     HostData = gather_host_data(),
 
     CwdApp = HostData#host_data.cwd_app,
-    AppName = get_app_name(CwdApp, Props),
+    AppName = get_app_name(CwdApp, proplists:get_value(app, Props)),
     Cwd = CwdApp#app_details.cwd,
     try get_RELEASES(Cwd) of
         ReleaseTuple ->
