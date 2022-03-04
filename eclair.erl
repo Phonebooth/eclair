@@ -699,6 +699,8 @@ depthfold(Fun, Accum, A) ->
 
 depthfold_(_Fun, [], {Keys, Accum}) ->
     {Keys, Accum};
+depthfold_(Fun, [{Key, []}|A], {Keys, Accum}) ->
+    {Keys, Fun(lists:reverse([Key|Keys]), [], Accum)};
 depthfold_(Fun, [{Key, Value}|A], {Keys, Accum}) ->
     {_Keys2, Accum2} = depthfold_(Fun, Value, {[Key|Keys], Accum}),
     depthfold_(Fun, A, {Keys, Accum2});
