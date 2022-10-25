@@ -1,5 +1,5 @@
 #!/usr/bin/env escript
-%%! -pa .eclair/deps/mini_s3/ebin -pa .eclair/deps/ibrowse/ebin
+%%! -pa .eclair/deps/base16/ebin -pa .eclair/deps/eini/ebin -pa .eclair/deps/envy/ebin -pa .eclair/deps/erlcloud/ebin -pa .eclair/deps/jsx/ebin -pa .eclair/deps/lhttpc/ebin -pa .eclair/deps/mini_s3/ebin
 
 -mode(compile).
 
@@ -71,13 +71,14 @@ get_run_props(Args) ->
     Props3.
 
 run_files(HostData, Props3) ->
-    ok = application:start(ibrowse),
+    {ok, _} = application:ensure_all_started(mini_s3),
     Root = proplists:get_value(root, Props3),
     Version = normalize_version_input(proplists:get_value(version, Props3)),
     Tags = proplists:get_value(tags, Props3),
     App = proplists:get_value(app, Props3),
     Config = mini_s3:new(proplists:get_value(access_key, Props3),
-            proplists:get_value(secret_key, Props3)),
+            proplists:get_value(secret_key, Props3),
+            "https://s3.us-east-1.amazonaws.com"),
     Paths = build_paths(Root, App, Version, Tags, HostData, Config),
     lists:foldl(fun(X, Files) ->
                 io:format("Searching path ~p~n", [X]),
@@ -229,7 +230,7 @@ bytes_consult_for_single_proplist(Bytes) ->
 
 bytes_consult(Bytes) ->
     % I could not find a way to consult bytes, so we use a temp file
-    {A,B,C} = now(),
+    {A,B,C} = os:timestamp(),
     N = node(),
     TempFile = "/tmp/" ++ lists:flatten(io_lib:format("~p-~p.~p.~p",[N,A,B,C])),
     file:write_file(TempFile, Bytes),
@@ -699,7 +700,7 @@ depthfold(Fun, Accum, A) ->
 
 depthfold_(_Fun, [], {Keys, Accum}) ->
     {Keys, Accum};
-depthfold_(Fun, [{Key, []}|A], {Keys, Accum}) ->
+depthfold_(Fun, [{Key, []}|_A], {Keys, Accum}) ->
     {Keys, Fun(lists:reverse([Key|Keys]), [], Accum)};
 depthfold_(Fun, [{Key, Value}|A], {Keys, Accum}) ->
     {_Keys2, Accum2} = depthfold_(Fun, Value, {[Key|Keys], Accum}),

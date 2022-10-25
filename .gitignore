@@ -3,3 +3,5 @@
 eclair.d
 deps
 ebin
+_build
+eclair.tar
